@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111827" />
+  <title>G2Clip</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>G2Clip</h1>
+      <p>웹에서 얻은 지식을 내 영구 지식으로</p>
+    </div>
+    <button id="newClipBtn" class="primary">＋ 새 클립</button>
+  </header>
+
+  <main>
+    <section class="toolbar card">
+      <input id="searchInput" type="search" placeholder="제목, 본문, 메모, 태그 검색" />
+      <select id="projectFilter">
+        <option value="">모든 프로젝트</option>
+      </select>
+      <select id="favoriteFilter">
+        <option value="">전체</option>
+        <option value="favorite">즐겨찾기만</option>
+      </select>
+    </section>
+
+    <section class="stats" aria-live="polite">
+      <span id="clipCount">0개 클립</span>
+      <span id="syncState">로컬 저장</span>
+    </section>
+
+    <section id="clipList" class="clip-list"></section>
+
+    <section id="emptyState" class="empty card">
+      <h2>첫 클립을 저장해 보세요</h2>
+      <p>기사, 논문, AI 대화에서 중요한 문장과 URL을 기록할 수 있습니다.</p>
+      <button id="emptyNewBtn" class="primary">새 클립 만들기</button>
+    </section>
+
+    <section class="backup card">
+      <h2>백업·복원</h2>
+      <div class="button-row">
+        <button id="exportBtn">JSON 내보내기</button>
+        <label class="file-button">
+          JSON 불러오기
+          <input id="importInput" type="file" accept="application/json,.json" />
+        </label>
+      </div>
+      <p class="muted">시험판은 이 기기의 브라우저에만 저장됩니다. 중요한 자료는 정기적으로 JSON 백업하세요.</p>
+    </section>
+  </main>
+
+  <dialog id="clipDialog">
+    <form id="clipForm" method="dialog">
+      <header class="dialog-header">
+        <h2 id="dialogTitle">새 클립</h2>
+        <button type="button" id="closeDialogBtn" class="icon-button" aria-label="닫기">✕</button>
+      </header>
+
+      <input id="clipId" type="hidden" />
+
+      <label>
+        제목
+        <input id="titleInput" required maxlength="240" />
+      </label>
+
+      <label>
+        원문 URL
+        <input id="urlInput" type="url" inputmode="url" placeholder="https://..." />
+      </label>
+
+      <label>
+        클립 내용
+        <textarea id="textInput" required rows="7" placeholder="중요한 문장이나 내용을 붙여넣으세요."></textarea>
+      </label>
+
+      <div class="two-column">
+        <label>
+          프로젝트
+          <input id="projectInput" list="projectOptions" placeholder="예: KangPCM" />
+          <datalist id="projectOptions"></datalist>
+        </label>
+
+        <label>
+          중요도
+          <select id="importanceInput">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+          </select>
+        </label>
+      </div>
+
+      <label>
+        태그
+        <input id="tagsInput" placeholder="AI, 특허, 배터리" />
+      </label>
+
+      <label>
+        메모
+        <textarea id="memoInput" rows="4" placeholder="왜 중요한지, 후속 행동 등을 기록하세요."></textarea>
+      </label>
+
+      <label class="check-row">
+        <input id="favoriteInput" type="checkbox" />
+        즐겨찾기
+      </label>
+
+      <footer class="dialog-actions">
+        <button type="button" id="deleteBtn" class="danger hidden">삭제</button>
+        <span class="spacer"></span>
+        <button type="button" id="cancelBtn">취소</button>
+        <button type="submit" class="primary">저장</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <template id="clipCardTemplate">
+    <article class="clip-card card">
+      <div class="clip-card-header">
+        <div>
+          <h2 class="clip-title"></h2>
+          <div class="clip-meta"></div>
+        </div>
+        <button class="favorite-button icon-button" aria-label="즐겨찾기 전환">☆</button>
+      </div>
+      <p class="clip-text"></p>
+      <p class="clip-memo"></p>
+      <div class="tags"></div>
+      <div class="clip-actions">
+        <a class="open-link" target="_blank" rel="noopener noreferrer">원문 열기</a>
+        <button class="edit-button">수정</button>
+      </div>
+    </article>
+  </template>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

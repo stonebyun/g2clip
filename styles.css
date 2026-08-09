@@ -1,0 +1,83 @@
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  color: #111827;
+  background: #f3f4f6;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; }
+button, input, textarea, select { font: inherit; }
+button, .file-button {
+  border: 1px solid #d1d5db;
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+button:active, .file-button:active { transform: translateY(1px); }
+.primary { background: #111827; color: #fff; border-color: #111827; }
+.danger { background: #fff; color: #b91c1c; border-color: #fecaca; }
+.hidden { display: none !important; }
+.app-header {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: calc(14px + env(safe-area-inset-top)) 18px 14px;
+  background: rgba(255,255,255,.94);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid #e5e7eb;
+}
+.app-header h1 { margin: 0; font-size: 24px; }
+.app-header p { margin: 3px 0 0; color: #6b7280; font-size: 13px; }
+main { width: min(900px, 100%); margin: 0 auto; padding: 18px 14px calc(30px + env(safe-area-inset-bottom)); }
+.card { background: #fff; border: 1px solid #e5e7eb; border-radius: 16px; box-shadow: 0 4px 16px rgba(17,24,39,.04); }
+.toolbar { display: grid; grid-template-columns: 1fr 180px 140px; gap: 10px; padding: 12px; }
+input, textarea, select {
+  width: 100%; border: 1px solid #d1d5db; border-radius: 10px; padding: 11px 12px;
+  background: #fff; color: #111827;
+}
+textarea { resize: vertical; }
+input:focus, textarea:focus, select:focus { outline: 2px solid #9ca3af; outline-offset: 1px; }
+.stats { display: flex; justify-content: space-between; color: #6b7280; font-size: 13px; padding: 12px 4px 8px; }
+.clip-list { display: grid; gap: 12px; }
+.clip-card { padding: 16px; }
+.clip-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.clip-title { margin: 0; font-size: 18px; line-height: 1.35; }
+.clip-meta { color: #6b7280; font-size: 12px; margin-top: 5px; }
+.icon-button { border: 0; background: transparent; padding: 6px; font-size: 22px; }
+.favorite-button.active { color: #b45309; }
+.clip-text { white-space: pre-wrap; line-height: 1.6; margin: 14px 0 8px; }
+.clip-memo { white-space: pre-wrap; color: #4b5563; border-left: 3px solid #d1d5db; padding-left: 10px; margin: 8px 0; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.tag { background: #f3f4f6; color: #374151; padding: 4px 8px; border-radius: 999px; font-size: 12px; }
+.clip-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.open-link { text-decoration: none; color: #1d4ed8; padding: 10px 8px; }
+.empty { text-align: center; padding: 36px 18px; }
+.empty h2 { margin-top: 0; }
+.backup { margin-top: 18px; padding: 16px; }
+.backup h2 { margin: 0 0 12px; font-size: 16px; }
+.button-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.file-button input { display: none; }
+.muted { color: #6b7280; font-size: 12px; line-height: 1.5; }
+dialog {
+  width: min(680px, calc(100% - 24px));
+  max-height: calc(100vh - 40px);
+  border: 0; border-radius: 18px; padding: 0;
+  box-shadow: 0 24px 70px rgba(0,0,0,.25);
+}
+dialog::backdrop { background: rgba(17,24,39,.5); backdrop-filter: blur(3px); }
+#clipForm { padding: 18px; overflow: auto; max-height: calc(100vh - 40px); }
+.dialog-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.dialog-header h2 { margin: 0; }
+label { display: block; font-weight: 600; font-size: 14px; margin: 12px 0; }
+label input, label textarea, label select { margin-top: 6px; font-weight: 400; }
+.two-column { display: grid; grid-template-columns: 1fr 120px; gap: 12px; }
+.check-row { display: flex; align-items: center; gap: 8px; }
+.check-row input { width: auto; margin: 0; }
+.dialog-actions { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
+.spacer { flex: 1; }
+@media (max-width: 700px) {
+  .toolbar { grid-template-columns: 1fr; }
+  .two-column { grid-template-columns: 1fr; }
+  .app-header p { display: none; }
+}

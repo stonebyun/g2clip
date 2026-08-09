@@ -1,0 +1,18 @@
+{
+  "name": "G2Clip",
+  "short_name": "G2Clip",
+  "description": "웹에서 얻은 지식을 프로젝트별로 저장하는 개인 지식 클리퍼",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f3f4f6",
+  "theme_color": "#111827",
+  "lang": "ko-KR",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
