@@ -1,0 +1,2 @@
+# g2clip
+KangResearchCapture. 웹페이지, ChatGPT, Claude, 논문, 뉴스에서  중요한 문장을 드래그한 뒤 우클릭하면  다음 정보가 자동 저장
