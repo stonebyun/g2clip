@@ -93,6 +93,52 @@ function normalizeClip(raw) {
   };
 }
 
+async function saveClipToSupabase(clip) {
+  const {
+    data: { user },
+    error: userError
+  } = await supabaseClient.auth.getUser();
+
+  if (userError) {
+    console.error("Supabase user error:", userError);
+    return false;
+  }
+
+  if (!user) {
+    console.log("Not signed in. Saved locally only.");
+    return false;
+  }
+
+  const payload = {
+    id: clip.id,
+    user_id: user.id,
+    title: clip.title,
+    url: clip.url,
+    text: clip.text,
+    project: clip.project,
+    tags: (clip.tags || []).join(", "),
+    memo: clip.memo,
+    importance: clip.importance,
+    favorite: clip.favorite,
+    created_at: clip.created_at,
+    updated_at: clip.updated_at
+  };
+
+  const { error } = await supabaseClient
+    .from("clips")
+    .upsert(payload, { onConflict: "id" });
+
+  if (error) {
+    console.error("Supabase clip save error:", error);
+    return false;
+  }
+
+  console.log("Clip saved to Supabase:", clip.id);
+  return true;
+}
+
+
+
 async function refresh() {
   state.clips = (await getAllClips()).sort((a, b) =>
     new Date(b.updated_at) - new Date(a.updated_at)
@@ -105,6 +151,8 @@ function filteredClips() {
 
   return state.clips.filter((clip) => {
     const haystack = [
+
+
       clip.title, clip.url, clip.text, clip.project,
       clip.memo, ...(clip.tags || [])
     ].join(" ").toLowerCase();
@@ -253,9 +301,18 @@ async function saveForm() {
     return;
   }
 
-  await putClip(clip);
+  /* await putClip(clip); */
+
+  const synced = await saveClipToSupabase(clip);
+
+  if (synced) {
+    clip.sync_status = "synced";
+    await putClip(clip);
+  }
+
   closeDialog();
   await refresh();
+
 }
 
 async function exportJson() {
@@ -351,5 +408,112 @@ async function init() {
     alert("브라우저 저장소를 열 수 없습니다. 일반 Safari 창에서 다시 시도하세요.");
   }
 }
+
+async function checkAuthSession() {
+  const { data, error } = await supabaseClient.auth.getSession();
+
+  if (error) {
+    console.error('Supabase auth session error:', error);
+    return;
+  }
+
+  console.log('Supabase session:', data.session);
+}
+
+checkAuthSession();
+
+
+
+const authEmail = document.getElementById("authEmail");
+const authPassword = document.getElementById("authPassword");
+const signUpBtn = document.getElementById("signUpBtn");
+const signInBtn = document.getElementById("signInBtn");
+const signOutBtn = document.getElementById("signOutBtn");
+const authStatus = document.getElementById("authStatus");
+
+async function updateAuthUI() {
+  const {
+    data: { session },
+    error
+  } = await supabaseClient.auth.getSession();
+
+  if (error) {
+    console.error("Auth session error:", error);
+    authStatus.textContent = "인증 상태 확인 오류";
+    return;
+  }
+
+  if (session?.user) {
+    authStatus.textContent = session.user.email;
+    signUpBtn.hidden = true;
+    signInBtn.hidden = true;
+    signOutBtn.hidden = false;
+    authEmail.hidden = true;
+    authPassword.hidden = true;
+  } else {
+    authStatus.textContent = "로그인되지 않음";
+    signUpBtn.hidden = false;
+    signInBtn.hidden = false;
+    signOutBtn.hidden = true;
+    authEmail.hidden = false;
+    authPassword.hidden = false;
+  }
+}
+
+signUpBtn.addEventListener("click", async () => {
+  const email = authEmail.value.trim();
+  const password = authPassword.value;
+
+  const { data, error } = await supabaseClient.auth.signUp({
+    email,
+    password
+  });
+
+  if (error) {
+    alert(`회원가입 실패: ${error.message}`);
+    return;
+  }
+
+  alert("회원가입 요청 완료. 이메일 확인 링크를 확인해 주세요.");
+  console.log("Sign-up result:", data);
+});
+
+signInBtn.addEventListener("click", async () => {
+  const email = authEmail.value.trim();
+  const password = authPassword.value;
+
+  const { data, error } = await supabaseClient.auth.signInWithPassword({
+    email,
+    password
+  });
+
+  if (error) {
+    alert(`로그인 실패: ${error.message}`);
+    return;
+  }
+
+  console.log("Sign-in result:", data);
+  await updateAuthUI();
+});
+
+signOutBtn.addEventListener("click", async () => {
+  const { error } = await supabaseClient.auth.signOut();
+
+  if (error) {
+    alert(`로그아웃 실패: ${error.message}`);
+    return;
+  }
+
+  await updateAuthUI();
+});
+
+supabaseClient.auth.onAuthStateChange(() => {
+  updateAuthUI();
+});
+
+updateAuthUI();
+
+
+
 
 init();
