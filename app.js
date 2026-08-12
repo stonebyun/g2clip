@@ -133,7 +133,8 @@ async function saveClipToSupabase(clip) {
     return false;
   }
 
-  console.log("Clip saved to Supabase:", clip.id);
+  /* console.log("Clip saved to Supabase:", clip.id); */
+  console.log("Supabase Clip saved...!:", clip.id);
   return true;
 }
 
@@ -301,14 +302,28 @@ async function saveForm() {
     return;
   }
 
-  /* await putClip(clip); */
+  /* 1st TRY: await putClip(clip); */
 
+  /* 2nd TRY:   
   const synced = await saveClipToSupabase(clip);
 
   if (synced) {
     clip.sync_status = "synced";
     await putClip(clip);
   }
+  */
+  /* 3rd TRY: */
+  await putClip(clip);
+
+  try {
+    await saveClipToSupabase(clip);
+}   catch (error) {
+    console.error(
+      "Supabase 저장 실패. 로컬에는 저장되었습니다.",
+      error
+    );
+  }
+
 
   closeDialog();
   await refresh();
@@ -506,6 +521,43 @@ signOutBtn.addEventListener("click", async () => {
 
   await updateAuthUI();
 });
+
+
+/* Add by ChatGPT-kBYUN on 17:40, 12Aug2026 */
+async function loadClipsFromSupabase() {
+    const {
+        data: { user },
+        error: userError
+    } = await supabaseClient.auth.getUser();
+
+    if (userError) {
+        console.error("Supabase user 조회 실패:", userError);
+        return [];
+    }
+
+    if (!user) {
+        console.log("로그인된 사용자가 없습니다.");
+        return [];
+    }
+
+    const { data, error } = await supabaseClient
+        .from("clips")
+        .select("*")
+        .eq("user_id", user.id);
+
+    if (error) {
+        console.error("Supabase clips 조회 실패:", error);
+        return [];
+    }
+
+    console.log("Clips loaded from Supabase:", data);
+
+    return data;
+}
+
+
+
+
 
 supabaseClient.auth.onAuthStateChange(() => {
   updateAuthUI();
