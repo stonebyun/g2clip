@@ -13,8 +13,19 @@
   <header class="app-header">
     <div>
       <h1>G2Clip</h1>
+          <div id="authPanel">
+            <input id="authEmail" type="email" placeholder="이메일">
+            <input id="authPassword" type="password" placeholder="비밀번호">
+            <button id="signUpBtn">회원가입</button>
+            <button id="signInBtn">로그인</button>
+            <button id="signOutBtn" hidden>로그아웃</button>
+            <span id="authStatus">로그인되지 않음</span>
+          </div>
       <p>웹에서 얻은 지식을 내 영구 지식으로 - Mac 연동 테스트</p>
     </div>
+
+
+
     <button id="newClipBtn" class="primary">＋ 새 클립</button>
   </header>
 
@@ -141,7 +152,8 @@
       </div>
     </article>
   </template>
-
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js"></script>
   <script src="app.js" defer></script>
 </body>
 </html>

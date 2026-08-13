@@ -93,6 +93,22 @@ function normalizeClip(raw) {
   };
 }
 
+function normalizeTags(tags) {
+  if (Array.isArray(tags)) {
+    return tags;
+  }
+
+  if (typeof tags === "string") {
+    return tags
+      .split(",")
+      .map(tag => tag.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+
 async function saveClipToSupabase(clip) {
   const {
     data: { user },
@@ -116,7 +132,10 @@ async function saveClipToSupabase(clip) {
     url: clip.url,
     text: clip.text,
     project: clip.project,
+
     tags: (clip.tags || []).join(", "),
+    /* tags: normalizeTags(clip.tags).join(", "), REDUNDANT */
+    
     memo: clip.memo,
     importance: clip.importance,
     favorite: clip.favorite,
@@ -187,7 +206,14 @@ function render() {
     memo.hidden = !clip.memo;
 
     const tags = node.querySelector(".tags");
-    (clip.tags || []).forEach((tag) => {
+
+    const tagList = Array.isArray(clip.tags)
+      ? clip.tags
+      : typeof clip.tags === "string"
+        ? clip.tags.split(",").map(tag => tag.trim()).filter(Boolean)
+        : [];
+
+    tagList.forEach((tag) => {
       const span = document.createElement("span");
       span.className = "tag";
       span.textContent = `#${tag}`;
@@ -201,6 +227,9 @@ function render() {
       clip.favorite = !clip.favorite;
       clip.updated_at = new Date().toISOString();
       clip.version = (clip.version || 1) + 1;
+
+      clip.sync_status = "local_only"; /* 왜냐하면 별표를 바꾸는 순간: IndexedDB ≠ Supabase */
+
       await putClip(clip);
       await refresh();
     });
@@ -208,6 +237,7 @@ function render() {
     const link = node.querySelector(".open-link");
     if (clip.url) {
       link.href = clip.url;
+      link.hidden = false;
     } else {
       link.hidden = true;
     }
@@ -217,11 +247,16 @@ function render() {
   });
 
   $("clipCount").textContent = `${clips.length}개 클립`;
-  $("emptyState").hidden = state.clips.length > 0;
-  list.hidden = state.clips.length === 0;
 
-  updateProjectControls();
-}
+  $("emptyState").hidden = clips.length > 0;
+  list.hidden = clips.length === 0;
+  /* OLD Error: state.clips --> clips
+     전체 0개 → "첫 클립을 저장해 보세요"
+     필터 결과 0개 → "조건에 맞는 클립이 없습니다"
+  */
+
+  updateProjectControls(); /* 현재 state의 clip 목록을 바탕으로 프로젝트 선택 목록 등을 다시 재구성? */
+}  /* End of function render() */
 
 function updateProjectControls() {
   const projects = [...new Set([
@@ -293,7 +328,8 @@ async function saveForm() {
     favorite: $("favoriteInput").checked,
     created_at: existing?.created_at || now,
     updated_at: now,
-    sync_status: existing?.sync_status || "local_only",
+    /* sync_status: existing?.sync_status || "local_only", */
+    sync_status: "local_only",
     version: (existing?.version || 0) + 1,
   });
 
@@ -302,27 +338,37 @@ async function saveForm() {
     return;
   }
 
-  /* 1st TRY: await putClip(clip); */
+  
+  /* 서버 저장보다 로컬 저장 IndexedDB 저장을 먼저한다 */
 
-  /* 2nd TRY:   
-  const synced = await saveClipToSupabase(clip);
-
-  if (synced) {
-    clip.sync_status = "synced";
-    await putClip(clip);
-  }
-  */
-  /* 3rd TRY: */
-  await putClip(clip);
-
+  /*
   try {
     await saveClipToSupabase(clip);
-}   catch (error) {
+  }   
+  catch (error) {
     console.error(
       "Supabase 저장 실패. 로컬에는 저장되었습니다.",
       error
     );
   }
+  */
+
+  /* Modified on 11:42, 12Aug2026 */
+  // 1. 로컬에 먼저 저장
+  await putClip(clip);
+
+  // 2. Supabase 저장 시도
+  const synced = await saveClipToSupabase(clip);
+
+  // 3. 서버 저장까지 성공했으면 로컬 상태도 synced로 변경
+  if (synced) {
+    clip.sync_status = "synced";
+    await putClip(clip);
+  }
+  else
+    console.log("Supabase 저장 실패. 로컬에는 저장되었습니다.");
+
+
 
 
   closeDialog();
@@ -550,12 +596,162 @@ async function loadClipsFromSupabase() {
         return [];
     }
 
-    console.log("Clips loaded from Supabase:", data);
+    /* console.log("Clips loaded from Supabase:", data); */
+    /* return data; */
+    /* Above two lines changed to following. */
+    /* Changed on 22:14, 12Aug2026. N*/
 
-    return data;
+    /* 2026.08.13.목요일.16:07분.... 달라지는 부분: 맵 함수 속에 normalizeClip() 불러 사용 */
+    /*
+    const normalizedClips = (data || []).map(clip => ({
+      ...clip,
+      tags: normalizeTags(clip.tags)
+    }));
+    console.log("Clips loaded from Supabase:", normalizedClips);
+    return normalizedClips;
+    */
+
+    const clips = (data || []).map(normalizeClip);
+    console.log("Clips loaded and normalized from Supabase:", clips);
+    return clips;
+
+} /* End of function loadClipsFromSupabase() */
+
+
+async function syncFromSupabase() {
+    const remoteClips = await loadClipsFromSupabase();
+
+    for (const clip of remoteClips) {
+      await putClip(clip);
+    }
+
+    console.log(
+      `${remoteClips.length} clip(s) synced from Supabase to IndexedDB`
+    );
+
+     return remoteClips;
 }
 
 
+async function syncToSupabase() {
+  const localClips = await getAllClips();
+  const remoteClips = await loadClipsFromSupabase();
+
+  const remoteIds = new Set(
+    remoteClips.map(clip => clip.id)
+  );
+
+  let uploadCount = 0;
+
+  for (const clip of localClips) {
+    if (!remoteIds.has(clip.id)) {
+      await saveClipToSupabase(clip);
+      uploadCount++;
+    }
+  }
+
+  console.log(
+    `${uploadCount} clip(s) synced from IndexedDB to Supabase`
+  );
+
+  return uploadCount;
+}
+
+/* Add on 22:27, 12Aug2026 */
+async function syncClips() {
+  const localClips = await getAllClips();
+  const remoteClips = await loadClipsFromSupabase();
+
+  const localMap = new Map(
+    localClips.map(clip => [clip.id, clip])
+  );
+
+  const remoteMap = new Map(
+    remoteClips.map(clip => [clip.id, clip])
+  );
+
+  let uploaded = 0;
+  let downloaded = 0;
+  let unchanged = 0;
+
+  // 1. 로컬 기준(IndexedDB의 clip들)으로 검사
+  for (const localClip of localClips) {
+    const remoteClip = remoteMap.get(localClip.id);
+
+    // Supabase에 없음 → 업로드
+    if (!remoteClip) {
+      const synced =
+        await saveClipToSupabase(localClip);
+
+      if (synced) {
+        localClip.sync_status = "synced"; /* Add on 16:31, 13Aug2026 */
+        await putClip(localClip); /* Add on 16:31, 13Aug2026 */
+        uploaded++;
+      }
+
+      continue;
+    }
+
+    // 양쪽 모두 있음 → updated_at 비교
+    const localTime =
+      new Date(localClip.updated_at).getTime();
+
+    const remoteTime =
+      new Date(remoteClip.updated_at).getTime();
+
+    if (localTime > remoteTime) {
+      // 로컬이 최신
+      const synced = /* success -> synced */
+        await saveClipToSupabase(localClip);
+
+      if (synced) {
+        localClip.sync_status = "synced"; /* Add on 16:38, 13Aug2026 */
+        await putClip(localClip); /* Add on 16:38, 13Aug2026 */
+        uploaded++;
+      }
+
+    } else if (remoteTime > localTime) {
+      // 서버DB Supabase가 최신
+      remoteClip.sync_status = "synced"; /* Add on 16:42, 13Aug2026 */
+      await putClip(remoteClip);
+      downloaded++;
+
+    } else {
+      // 동일
+      /* add following 3 lines on 16:45 on 13Aug2026..양쪽 수정시각이 동일 */
+      if (localClip.sync_status !== "synced") {
+        localClip.sync_status = "synced";
+        await putClip(localClip);
+      }
+
+      unchanged++;
+    }
+  }
+
+  // 2. Supabase에만 존재하는 clip 검사
+  for (const remoteClip of remoteClips) {
+    if (!localMap.has(remoteClip.id)) {
+      await putClip(remoteClip);
+      downloaded++;
+    }
+  }
+
+  /* add following 3 lines on 16:49 on 13Aug2026 */
+  await refresh(); 
+
+  console.log(
+    `Sync complete: ` +
+    `${uploaded} uploaded, ` +
+    `${downloaded} downloaded, ` +
+    `${unchanged} unchanged`
+  );
+
+  return {
+    uploaded,
+    downloaded,
+    unchanged
+  };
+}
 
 
 
