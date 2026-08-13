@@ -755,6 +755,49 @@ async function syncClips() {
 
 
 
+function requestSync(reason) {
+    console.log(`🔄 Sync requested: ${reason}`);
+    syncClips();
+}
+
+window.addEventListener("online", () => {
+    requestSync("network-restored");
+});
+
+supabaseClient.auth.onAuthStateChange((event, session) => {
+    console.log("🔐 Auth state changed:", event);
+
+    if (event === "SIGNED_IN") {
+        setTimeout(() => {
+            requestSync("signed-in");
+        }, 0);
+    }
+});
+
+
+
+async function initializeApp() {
+    const {
+        data: { session },
+        error
+    } = await supabaseClient.auth.getSession();
+
+    if (error) {
+        console.error("❌ Session check failed:", error);
+        return;
+    }
+
+    if (session) {
+        console.log("🔐 Existing session found");
+        requestSync("app-start");
+    } else {
+        console.log("🔓 No active session");
+    }
+}
+
+
+
+
 supabaseClient.auth.onAuthStateChange(() => {
   updateAuthUI();
 });
@@ -764,4 +807,14 @@ updateAuthUI();
 
 
 
+/* Race condition occured! */
+/*
 init();
+initializeApp();
+*/
+async function startApp() {
+    await init();
+    await initializeApp();
+}
+
+startApp();
