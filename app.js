@@ -166,6 +166,12 @@ function normalizeTags(tags) {
 
 
 async function saveClipToSupabase(clip) {
+  /*
+  if (clip.title === "UPLOAD3 FAILURE TEST") {
+    throw new Error("TEST: forced clip upload failure");
+  }
+  */
+
   const {
     data: { user },
     error: userError
@@ -682,6 +688,8 @@ async function loadClipsFromSupabase() {
 
 
 async function loadTombstonesFromSupabase() {
+  /* throw new Error("TEST: tombstone fetch failed"); */
+
     const {
         data: { user },
         error: userError
@@ -704,7 +712,8 @@ async function loadTombstonesFromSupabase() {
 
     if (error) {
         console.error("Supabase tombstone 조회 실패:", error);
-        return [];
+        /* 위험!: return []; */
+        throw error;
     }
 
     return data || [];
@@ -752,124 +761,207 @@ async function syncToSupabase() {
 
 /* Add on 22:27, 12Aug2026 */
 async function syncClips() {
-    // 0. tombstone을 먼저 읽어서 로컬 삭제에 적용
-    const tombstones = await loadTombstonesFromSupabase();
+    try {  
 
-    const tombstoneIds = new Set(
-        tombstones.map(tombstone => tombstone.clip_id)
-    );
+        // 0. tombstone을 먼저 읽어서 로컬 삭제에 적용
+        const tombstones = 
+            await loadTombstonesFromSupabase();
 
-    let localClips = await getAllClips();
+        const tombstoneIds = new Set(
+            tombstones.map(tombstone => tombstone.clip_id)
+        );
 
-    for (const localClip of localClips) {
+        let localClips = await getAllClips();
+
+        for (const localClip of localClips) {
+            if (tombstoneIds.has(localClip.id)) {
+                await deleteClip(localClip.id);
+
+                console.log(
+                    "🪦 Tombstone applied locally:",
+                    localClip.id
+                );
+            }
+        }
+
+        // tombstone 적용 후 다시 읽어야 함
+        localClips = await getAllClips();
+
+        const remoteClips = await loadClipsFromSupabase();
+
+        const localMap = new Map(
+            localClips.map(clip => [clip.id, clip])
+        );
+
+        const remoteMap = new Map(
+            remoteClips.map(clip => [clip.id, clip])
+        );
+
+      /*  const localClips = await getAllClips(); */
+      localClips = await getAllClips(); 
+
+      let uploaded = 0;
+      let downloaded = 0;
+      let unchanged = 0;
+      let failed = 0; 
+
+      // 1. 로컬 기준(IndexedDB의 clip들)으로 검사
+      for (const localClip of localClips) {
+
+        // tombstone 대상은 절대 업로드하지 않음
         if (tombstoneIds.has(localClip.id)) {
-            await deleteClip(localClip.id);
-
-            console.log(
-                "🪦 Tombstone applied locally:",
+            console.warn(
+                "🪦 Upload blocked by tombstone:",
                 localClip.id
             );
+            continue;
         }
-    }
 
-    // tombstone 적용 후 다시 읽어야 함
-    localClips = await getAllClips();
+        const remoteClip = remoteMap.get(localClip.id);
 
-    const remoteClips = await loadClipsFromSupabase();
+        // Supabase에 없음 → 업로드
+        if (!remoteClip) {
+            try {
+                const synced =
+                  await saveClipToSupabase(localClip);
 
-    const localMap = new Map(
-        localClips.map(clip => [clip.id, clip])
-    );
+                if (synced) {
+                  localClip.sync_status = "synced"; /* Add on 16:31, 13Aug2026 */
+                  await putClip(localClip); /* Add on 16:31, 13Aug2026 */
+                  uploaded++;
+                } else {
+                    localClip.sync_status = "pending";
+                    await putClip(localClip);
+                    failed++;
 
-    const remoteMap = new Map(
-        remoteClips.map(clip => [clip.id, clip])
-    );
+                    console.warn(
+                        "⚠️ Clip upload failed, kept pending:",
+                        localClip.id
+                    );
+                }
+            } catch (error) {
+                localClip.sync_status = "pending";
+                await putClip(localClip);   ``
+                failed++;
 
-  /*  const localClips = await getAllClips(); */
-  localClips = await getAllClips(); 
+                console.error(
+                    "❌ Clip upload error, kept pending:",
+                    localClip.id,
+                    error
+                );              
+            }
+            continue;
+       }
+      
 
-  let uploaded = 0;
-  let downloaded = 0;
-  let unchanged = 0;
+        // 양쪽 모두 있음 → updated_at 비교
+        const localTime =
+          new Date(localClip.updated_at).getTime();
 
-  // 1. 로컬 기준(IndexedDB의 clip들)으로 검사
-  for (const localClip of localClips) {
-    const remoteClip = remoteMap.get(localClip.id);
+        const remoteTime =
+          new Date(remoteClip.updated_at).getTime();
 
-    // Supabase에 없음 → 업로드
-    if (!remoteClip) {
-      const synced =
-        await saveClipToSupabase(localClip);
+        if (localTime > remoteTime) {
+            try {
+                // 로컬이  
+                const synced = /* success -> synced */
+                  await saveClipToSupabase(localClip);
 
-      if (synced) {
-        localClip.sync_status = "synced"; /* Add on 16:31, 13Aug2026 */
-        await putClip(localClip); /* Add on 16:31, 13Aug2026 */
-        uploaded++;
+                if (synced) {
+                    localClip.sync_status = "synced"; /* Add on 16:38, 13Aug2026 */
+                    await putClip(localClip); /* Add on 16:38, 13Aug2026 */
+                    uploaded++;
+                } else {
+                    localClip.sync_status = "pending";
+                    await putClip(localClip);
+                    failed++;
+
+                    console.warn(
+                        "⚠️ Clip update failed, kept pending:",
+                        localClip.id
+                    );
+                }
+            } catch (error) {
+                localClip.sync_status = "pending";
+                await putClip(localClip);
+                failed++;
+
+                console.error(
+                    "❌ Clip update error, kept pending:",
+                    localClip.id,
+                    error
+                );
+            }   
+        } else if (remoteTime > localTime) {
+          // 서버DB Supabase가 최신
+          remoteClip.sync_status = "synced"; /* Add on 16:42, 13Aug2026 */
+          await putClip(remoteClip);
+          downloaded++;
+
+        } else {
+          // 동일
+          if (localClip.sync_status !== "synced") {        
+            /* add following 3 lines on 16:45 on 13Aug2026..양쪽 수정시각이 동일 */
+
+            localClip.sync_status = "synced";
+            await putClip(localClip);
+          }
+
+          unchanged++;
+        }
       }
 
-      continue;
-    }
-
-    // 양쪽 모두 있음 → updated_at 비교
-    const localTime =
-      new Date(localClip.updated_at).getTime();
-
-    const remoteTime =
-      new Date(remoteClip.updated_at).getTime();
-
-    if (localTime > remoteTime) {
-      // 로컬이 최신
-      const synced = /* success -> synced */
-        await saveClipToSupabase(localClip);
-
-      if (synced) {
-        localClip.sync_status = "synced"; /* Add on 16:38, 13Aug2026 */
-        await putClip(localClip); /* Add on 16:38, 13Aug2026 */
-        uploaded++;
+      // 2. Supabase에만 존재하는 clip 검사 + 삭제한 clip을 같은 sync 안에서 다시 살림 없게!
+      for (const remoteClip of remoteClips) {
+        if (!localMap.has(remoteClip.id) &&
+            !tombstoneIds.has(remoteClip.id)
+        ) {
+            await putClip(remoteClip);
+            downloaded++;
+          }
       }
 
-    } else if (remoteTime > localTime) {
-      // 서버DB Supabase가 최신
-      remoteClip.sync_status = "synced"; /* Add on 16:42, 13Aug2026 */
-      await putClip(remoteClip);
-      downloaded++;
+      // 3. merge 후 tombstone을 마지막으로 다시 적용
+      const finalLocalClips = await getAllClips();
 
-    } else {
-      // 동일
-      /* add following 3 lines on 16:45 on 13Aug2026..양쪽 수정시각이 동일 */
-      if (localClip.sync_status !== "synced") {
-        localClip.sync_status = "synced";
-        await putClip(localClip);
+      for (const localClip of finalLocalClips) {
+          if (tombstoneIds.has(localClip.id)) {
+              await deleteClip(localClip.id);
+
+              console.warn(
+                  "🪦 Tombstone re-applied after merge:",
+                  localClip.id
+              );
+          }
       }
 
-      unchanged++;
+      /* add following 3 lines on 16:49 on 13Aug2026 */
+      await refresh(); 
+
+      console.log(
+        `Sync complete: ` +
+        `${uploaded} uploaded, ` +
+        `${downloaded} downloaded, ` +
+        `${unchanged} unchanged, ` + 
+        `${failed} failed`
+      );
+
+      return {
+        uploaded,
+        downloaded,
+        unchanged,
+        failed
+      };
+
+    } catch (error) {
+
+        console.error(
+            "❌ Sync aborted safely:",
+            error
+        );
     }
-  }
 
-  // 2. Supabase에만 존재하는 clip 검사
-  for (const remoteClip of remoteClips) {
-    if (!localMap.has(remoteClip.id)) {
-      await putClip(remoteClip);
-      downloaded++;
-    }
-  }
-
-  /* add following 3 lines on 16:49 on 13Aug2026 */
-  await refresh(); 
-
-  console.log(
-    `Sync complete: ` +
-    `${uploaded} uploaded, ` +
-    `${downloaded} downloaded, ` +
-    `${unchanged} unchanged`
-  );
-
-  return {
-    uploaded,
-    downloaded,
-    unchanged
-  };
-}
+} /* END of async function syncClips() */
 
 
 
