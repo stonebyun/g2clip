@@ -42,11 +42,12 @@ function openDatabase() {
   });
 }
 
+/* An IMPORTANT helper func. for simple expression of 'clips' read or write */
 function tx(mode = "readonly") {
   return db.transaction(STORE_NAME, mode).objectStore(STORE_NAME);
 }
 
-function getAllClips() {
+function getAllClips() { /* readl all clips from 'clips' */
   return new Promise((resolve, reject) => {
     const request = tx().getAll();
     request.onsuccess = () => resolve(request.result || []);
@@ -70,9 +71,64 @@ function deleteClip(id) {
   });
 }
 
+async function deleteClipWithTombstone(id) {
+    const {
+        data: { user },
+        error: userError
+    } = await supabaseClient.auth.getUser();
+
+    if (userError) {
+        throw userError;
+    }
+
+    if (!user) {
+        throw new Error("로그인된 사용자가 없습니다.");
+    }
+
+    const deletedAt = new Date().toISOString();
+
+    // 1. 서버에 삭제 사실부터 기록
+    const { error: tombstoneError } = await supabaseClient
+        .from("clip_tombstones")
+        .upsert(
+            {
+                clip_id: id,
+                user_id: user.id,
+                deleted_at: deletedAt
+            },
+            {
+                onConflict: "clip_id",
+                ignoreDuplicates: true
+            }
+        );
+
+    if (tombstoneError) {
+        throw tombstoneError;
+    }
+
+    // 2. 서버의 실제 clip 삭제
+    const { error: deleteRemoteError } = await supabaseClient
+        .from("clips")
+        .delete()
+        .eq("id", id);
+
+    if (deleteRemoteError) {
+        throw deleteRemoteError;
+    }
+
+    // 3. 로컬 IndexedDB에서도 실제 삭제
+    await deleteClip(id);
+
+    // 4. 화면 갱신
+    await refresh();
+
+    console.log("🪦 Clip deleted with tombstone:", id);
+}
+
+
 function normalizeClip(raw) {
   const now = new Date().toISOString();
-  return {
+  return { /* .filter(Boolean)은 빈 태그를 제거하는 역할 */
     id: raw.id || uuid(),
     user_id: raw.user_id || null,
     title: String(raw.title || "").trim(),
@@ -427,9 +483,16 @@ function bindEvents() {
   $("deleteBtn").addEventListener("click", async () => {
     const id = $("clipId").value;
     if (!id || !confirm("이 클립을 삭제할까요?")) return;
+
+    /* Replaced on 12:43, 16Aug2026.
     await deleteClip(id);
     closeDialog();
     await refresh();
+    */
+
+    await deleteClipWithTombstone(id);
+    closeDialog();
+
   });
 
   $("searchInput").addEventListener("input", (event) => {
@@ -618,6 +681,36 @@ async function loadClipsFromSupabase() {
 } /* End of function loadClipsFromSupabase() */
 
 
+async function loadTombstonesFromSupabase() {
+    const {
+        data: { user },
+        error: userError
+    } = await supabaseClient.auth.getUser();
+
+    if (userError) {
+        console.error("Supabase user 조회 실패:", userError);
+        return [];
+    }
+
+    if (!user) {
+        console.log("로그인된 사용자가 없습니다.");
+        return [];
+    }
+
+    const { data, error } = await supabaseClient
+        .from("clip_tombstones")
+        .select("clip_id, user_id, deleted_at")
+        .eq("user_id", user.id);
+
+    if (error) {
+        console.error("Supabase tombstone 조회 실패:", error);
+        return [];
+    }
+
+    return data || [];
+}
+
+
 async function syncFromSupabase() {
     const remoteClips = await loadClipsFromSupabase();
 
@@ -659,16 +752,41 @@ async function syncToSupabase() {
 
 /* Add on 22:27, 12Aug2026 */
 async function syncClips() {
-  const localClips = await getAllClips();
-  const remoteClips = await loadClipsFromSupabase();
+    // 0. tombstone을 먼저 읽어서 로컬 삭제에 적용
+    const tombstones = await loadTombstonesFromSupabase();
 
-  const localMap = new Map(
-    localClips.map(clip => [clip.id, clip])
-  );
+    const tombstoneIds = new Set(
+        tombstones.map(tombstone => tombstone.clip_id)
+    );
 
-  const remoteMap = new Map(
-    remoteClips.map(clip => [clip.id, clip])
-  );
+    let localClips = await getAllClips();
+
+    for (const localClip of localClips) {
+        if (tombstoneIds.has(localClip.id)) {
+            await deleteClip(localClip.id);
+
+            console.log(
+                "🪦 Tombstone applied locally:",
+                localClip.id
+            );
+        }
+    }
+
+    // tombstone 적용 후 다시 읽어야 함
+    localClips = await getAllClips();
+
+    const remoteClips = await loadClipsFromSupabase();
+
+    const localMap = new Map(
+        localClips.map(clip => [clip.id, clip])
+    );
+
+    const remoteMap = new Map(
+        remoteClips.map(clip => [clip.id, clip])
+    );
+
+  /*  const localClips = await getAllClips(); */
+  localClips = await getAllClips(); 
 
   let uploaded = 0;
   let downloaded = 0;
@@ -789,7 +907,7 @@ async function initializeApp() {
 
     if (session) {
         console.log("🔐 Existing session found");
-        requestSync("app-start");
+        requestSync("app-start"); /* syncClips() is called. */
     } else {
         console.log("🔓 No active session");
     }
