@@ -212,9 +212,18 @@ async function saveClipToSupabase(clip) {
     updated_at: clip.updated_at
   };
 
+  /* Changed on 12:15, 18Aug2026
   const { error } = await supabaseClient
     .from("clips")
     .upsert(payload, { onConflict: "id" });
+  */
+
+  const { data, error } = await supabaseCLient
+    .from("clips")
+    .upsert(payload, { onConflict: "id" })
+    .select()
+    .single();
+
 
   if (error) {
     if (isTombstoneConflict(error)) {
@@ -231,7 +240,8 @@ async function saveClipToSupabase(clip) {
 
   /* console.log("Clip saved to Supabase:", clip.id); */
   console.log("Supabase Clip saved...!:", clip.id);
-  return true;
+  //return true;
+  return data;
 } /* END of async function saveClipToSupabase(clip)  */
 
 
@@ -842,23 +852,37 @@ async function syncClips() {
         // Supabase에 없음 → 업로드
         if (!remoteClip) {
             try {
-                const synced =
+                  /*
+                  const synced =
+                    await saveClipToSupabase(localClip);
+
+                  if (synced) {
+                    localClip.sync_status = "synced"; // Add on 16:31, 13Aug2026 
+                    await putClip(localClip); // Add on 16:31, 13Aug2026 
+                    uploaded++;
+                  */
+
+                  const savedRemoteClip =
                   await saveClipToSupabase(localClip);
 
-                if (synced) {
-                  localClip.sync_status = "synced"; /* Add on 16:31, 13Aug2026 */
-                  await putClip(localClip); /* Add on 16:31, 13Aug2026 */
-                  uploaded++;
-                } else {
-                    localClip.sync_status = "pending";
-                    await putClip(localClip);
-                    failed++;
+                  if (savedRemoteClip) {
+                    const syncedClip = normalizeClip({
+                      ...savedRemoteClip,
+                      sync_status: "synced"
+                    });
 
-                    console.warn(
-                        "⚠️ Clip upload failed, kept pending:",
-                        localClip.id
-                    );
-                }
+                    await putClip(syncedClip);
+                    uploaded++;
+                  } else {
+                      localClip.sync_status = "pending";
+                      await putClip(localClip);
+                      failed++;
+
+                      console.warn(
+                          "⚠️ Clip upload failed, kept pending:",
+                          localClip.id
+                      );
+                  }
             } catch (error) {
                 if (isTombstoneConflict(error)) {
                   await deleteClip(localClip.id);
@@ -895,38 +919,36 @@ async function syncClips() {
 
         if (localTime > remoteTime) {
             try {
-                // 로컬이  
-                const synced = /* success -> synced */
+                  /*
+                  const synced = // success -> synced 
+                    await saveClipToSupabase(localClip);
+
+                  if (synced) {
+                      localClip.sync_status = "synced"; // Add on 16:38, 13Aug2026 
+                      await putClip(localClip); // Add on 16:38, 13Aug2026 
+                      uploaded++;
+                  */
+                  const savedRemoteClip =
                   await saveClipToSupabase(localClip);
 
-                if (synced) {
-                    localClip.sync_status = "synced"; /* Add on 16:38, 13Aug2026 */
-                    await putClip(localClip); /* Add on 16:38, 13Aug2026 */
+                  if (savedRemoteClip) {
+                    const syncedClip = normalizeClip({
+                      ...savedRemoteClip,
+                      sync_status: "synced"
+                    });
+
+                    await putClip(syncedClip);
                     uploaded++;
-                } else {
-                    localClip.sync_status = "pending";
-                    await putClip(localClip);
-                    failed++;
+                  } else {
+                      localClip.sync_status = "pending";
+                      await putClip(localClip);
+                      failed++;
 
-                    console.warn(
-                        "⚠️ Clip update failed, kept pending:",
-                        localClip.id
-                    );
-                }
-
-            /*
-            } catch (error) {
-                localClip.sync_status = "pending";
-                await putClip(localClip);
-                failed++;
-
-                console.error(
-                    "❌ Clip update error, kept pending:",
-                    localClip.id,
-                    error
-                );
-            }   
-            */
+                      console.warn(
+                          "⚠️ Clip update failed, kept pending:",
+                          localClip.id
+                      );
+                  }
             } catch (error) {
                 if (isTombstoneConflict(error)) {
                   await deleteClip(localClip.id);
