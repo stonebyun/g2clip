@@ -164,6 +164,13 @@ function normalizeTags(tags) {
   return [];
 }
 
+function isTombstoneConflict(error) {
+  return (
+    error?.code === "P0001" &&
+    error?.message === "G2CLIP_TOMBSTONE_CONFLICT"
+  );
+}
+
 
 async function saveClipToSupabase(clip) {
   /*
@@ -210,6 +217,14 @@ async function saveClipToSupabase(clip) {
     .upsert(payload, { onConflict: "id" });
 
   if (error) {
+    if (isTombstoneConflict(error)) {
+      console.warn(
+        "🪦 Supabase rejected stale clip because tombstone exists:",
+        clip.id
+      );
+      throw error;
+    }
+
     console.error("Supabase clip save error:", error);
     return false;
   }
@@ -217,7 +232,7 @@ async function saveClipToSupabase(clip) {
   /* console.log("Clip saved to Supabase:", clip.id); */
   console.log("Supabase Clip saved...!:", clip.id);
   return true;
-}
+} /* END of async function saveClipToSupabase(clip)  */
 
 
 
@@ -773,6 +788,11 @@ async function syncClips() {
 
         let localClips = await getAllClips();
 
+
+        /* debugger; */
+        /* Above: stale clip -- delete-wins PROVED! */
+        /* on 09:43, 18Aug2026 */
+
         for (const localClip of localClips) {
             if (tombstoneIds.has(localClip.id)) {
                 await deleteClip(localClip.id);
@@ -840,18 +860,30 @@ async function syncClips() {
                     );
                 }
             } catch (error) {
+                if (isTombstoneConflict(error)) {
+                  await deleteClip(localClip.id);
+
+                  console.warn(
+                    "🪦 Delete-wins: stale local clip removed after tombstone conflict:",
+                    localClip.id
+                  );
+              
+                  continue;
+                }
+
                 localClip.sync_status = "pending";
-                await putClip(localClip);   ``
+                await putClip(localClip);
                 failed++;
 
                 console.error(
-                    "❌ Clip upload error, kept pending:",
-                    localClip.id,
-                    error
-                );              
+                  "❌ Clip upload error, kept pending:",
+                  localClip.id,
+                  error
+                );
             }
+
             continue;
-       }
+        }
       
 
         // 양쪽 모두 있음 → updated_at 비교
@@ -881,6 +913,8 @@ async function syncClips() {
                         localClip.id
                     );
                 }
+
+            /*
             } catch (error) {
                 localClip.sync_status = "pending";
                 await putClip(localClip);
@@ -892,6 +926,30 @@ async function syncClips() {
                     error
                 );
             }   
+            */
+            } catch (error) {
+                if (isTombstoneConflict(error)) {
+                  await deleteClip(localClip.id);
+
+                  console.warn(
+                    "🪦 Delete-wins: stale local edit removed after tombstone conflict:",
+                    localClip.id
+                  );
+
+                  continue;
+                }
+
+                localClip.sync_status = "pending";
+                await putClip(localClip);
+                failed++;
+
+                console.error(
+                  "❌ Clip update error, kept pending:",
+                  localClip.id,
+                  error
+                );
+            }
+
         } else if (remoteTime > localTime) {
           // 서버DB Supabase가 최신
           remoteClip.sync_status = "synced"; /* Add on 16:42, 13Aug2026 */
@@ -969,6 +1027,9 @@ function requestSync(reason) {
     console.log(`🔄 Sync requested: ${reason}`);
     syncClips();
 }
+
+window.syncClips = syncClips; /* 디버깅용 잠깐 노출 */
+
 
 window.addEventListener("online", () => {
     requestSync("network-restored");
