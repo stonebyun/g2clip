@@ -17,7 +17,59 @@ const state = {
   favoriteOnly: false,
 };
 
+
+// 마지막 sync에서 확인한 Supabase 원본 메타데이터
+// 디버깅/고급 정보 UI용이며 Supabase에 저장하지 않음
+const remoteClipMetaMap = new Map();
+
+
+function updateRemoteClipMeta(remoteClip) {
+    if (!remoteClip?.id) return;
+
+    remoteClipMetaMap.set(remoteClip.id, {
+        revision: Number(remoteClip.revision ?? 0),
+
+        created_at: remoteClip.created_at ?? null,
+        updated_at: remoteClip.updated_at ?? null,
+
+        client_created_at: remoteClip.client_created_at ?? null,
+        client_updated_at: remoteClip.client_updated_at ?? null,
+
+        server_created_at: remoteClip.server_created_at ?? null,
+        server_updated_at: remoteClip.server_updated_at ?? null
+    });
+}
+
+
 let db;
+
+// Utility 함수들 in app.js
+function formatAdvancedTime(value) {
+    if (!value) {
+        return "—";
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return String(value);
+    }
+
+    const formatted =
+        new Intl.DateTimeFormat("ko-KR", {
+            timeZone: "Asia/Seoul",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
+        }).format(date);
+
+    return `${formatted}  (${date.toISOString()})`;
+}  //Sample: 2026. 08. 21. 13:56:03  (2026-08-21T04:56:03.000Z)
+
 
 function uuid() {
   return crypto.randomUUID ? crypto.randomUUID() :
@@ -143,9 +195,21 @@ function normalizeClip(raw) {
     favorite: Boolean(raw.favorite),
     created_at: raw.created_at || now,
     updated_at: raw.updated_at || now,
+
+    client_created_at: raw.client_created_at ?? null,
+    client_updated_at: raw.client_updated_at ?? null,
+
+    server_created_at: raw.server_created_at ?? null,
+    server_updated_at: raw.server_updated_at ?? null,
+
     device_id: raw.device_id || "local-ipad",
     sync_status: raw.sync_status || "local_only",
+    /* Invalidated after introduction of revision & base_revision
+       on 09:04, 19Aug2026
     version: Number(raw.version || 1),
+    */
+    revision: Number(raw.revision ?? raw.version ?? 0),
+    base_revision: Number(raw.base_revision ?? raw.revision ?? raw.version ?? 0),
   };
 }
 
@@ -171,14 +235,97 @@ function isTombstoneConflict(error) {
   );
 }
 
+function clipToRemotePayload(clip) {
+  return {
+    id: clip.id,
+    title: clip.title,
+    url: clip.url,
+    text: clip.text,
+    project: clip.project,
+    tags: Array.isArray(clip.tags)
+      ? clip.tags.join(",")
+      : String(clip.tags || ""),
+    memo: clip.memo || "",
+    importance: clip.importance,
+    favorite: clip.favorite,
+    created_at: clip.created_at,
+    updated_at: clip.updated_at,
+  };
+}
+
+async function updateClipWithRevisionCheck(clip, userId) {
+  const baseRevision = Number(clip.base_revision ?? clip.revision ?? 0);
+
+  const payload = {
+    ...clipToRemotePayload(clip),
+    user_id: userId,
+  };
+
+  const { data, error } = await supabaseClient
+    .from("clips")
+    .update(payload)
+    .eq("id", clip.id)
+    .eq("user_id", userId)
+    .eq("revision", baseRevision)
+    .select();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data || data.length === 0) {
+    return {
+      ok: false,
+      conflict: true,
+      clip: null,
+    };
+  }
+
+  return {
+    ok: true,
+    conflict: false,
+    clip: data[0],
+  };
+}
+
+async function insertNewClip(clip, userId) {
+  const payload = {
+    ...clipToRemotePayload(clip),
+    user_id: userId,
+  };
+
+  const { data, error } = await supabaseClient
+    .from("clips")
+    .insert(payload)
+    .select()
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
+
+function makeRevisionConflictError(clip) {
+  const error = new Error(
+    `Revision conflict: clip ${clip.id}, base_revision=${clip.base_revision}`
+  );
+
+  error.code = "REVISION_CONFLICT";
+  error.clipId = clip.id;
+
+  return error;
+}
+
+function isRevisionConflict(error) {
+  return error?.code === "REVISION_CONFLICT";
+}
 
 async function saveClipToSupabase(clip) {
-  /*
-  if (clip.title === "UPLOAD3 FAILURE TEST") {
-    throw new Error("TEST: forced clip upload failure");
-  }
-  */
-
+  /* if (clip.title === "UPLOAD3 FAILURE TEST") {
+    throw new Error("TEST: forced clip upload failure"); } */
   const {
     data: { user },
     error: userError
@@ -209,7 +356,10 @@ async function saveClipToSupabase(clip) {
     importance: clip.importance,
     favorite: clip.favorite,
     created_at: clip.created_at,
-    updated_at: clip.updated_at
+    updated_at: clip.updated_at,
+
+    client_created_at: clip.client_created_at,
+    client_updated_at: clip.client_updated_at
   };
 
   /* Changed on 12:15, 18Aug2026
@@ -218,30 +368,104 @@ async function saveClipToSupabase(clip) {
     .upsert(payload, { onConflict: "id" });
   */
 
-  const { data, error } = await supabaseCLient
-    .from("clips")
-    .upsert(payload, { onConflict: "id" })
-    .select()
-    .single();
+  const revision = Number(clip.revision ?? 0);
+  const baseRevision = Number(
+    clip.base_revision ?? clip.revision ?? 0
+  );
 
+  try {
+    // -----------------------------------------
+    // 1. 새 로컬 클립 → INSERT
+    // -----------------------------------------
+    if (revision === 0) {
+      const { data, error } = await supabaseClient
+        .from("clips")
+        .insert(payload)
+        .select()
+        .single();
 
-  if (error) {
-    if (isTombstoneConflict(error)) {
-      console.warn(
-        "🪦 Supabase rejected stale clip because tombstone exists:",
-        clip.id
+      if (error) {
+        if (isTombstoneConflict(error)) {
+          console.warn(
+            "🪦 Supabase rejected stale clip because tombstone exists:",
+            clip.id
+          );
+          throw error;
+        }
+
+        console.error("Supabase clip insert error:", error);
+        return false;
+      }
+
+      console.log(
+        "Supabase Clip inserted:",
+        clip.id,
+        "revision:",
+        data.revision
       );
+
+      return data;
+    }
+
+    // -----------------------------------------
+    // 2. 기존 클립 → revision 조건부 UPDATE
+    // -----------------------------------------
+    const { data, error } = await supabaseClient
+      .from("clips")
+      .update(payload)
+      .eq("id", clip.id)
+      .eq("user_id", user.id)
+      .eq("revision", baseRevision)
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      if (isTombstoneConflict(error)) {
+        console.warn(
+          "🪦 Supabase rejected stale clip because tombstone exists:",
+          clip.id
+        );
+        throw error;
+      }
+
+      console.error("Supabase clip update error:", error);
+      return false;
+    }
+
+    // UPDATE 조건을 만족하는 행이 없었음
+    // 즉 서버 revision이 base_revision과 달라졌거나,
+    // 서버 row가 삭제된 상태
+    if (!data) {
+      console.warn(
+        "⚠️ Revision conflict:",
+        clip.id,
+        "base_revision:",
+        baseRevision
+      );
+
+      throw makeRevisionConflictError(clip);
+    }
+
+    console.log(
+      "Supabase Clip updated:",
+      clip.id,
+      "revision:",
+      data.revision
+    );
+
+    return data;
+
+  } catch (error) {
+    if (
+      isTombstoneConflict(error) ||
+      isRevisionConflict(error)
+    ) {
       throw error;
     }
 
     console.error("Supabase clip save error:", error);
     return false;
   }
-
-  /* console.log("Clip saved to Supabase:", clip.id); */
-  console.log("Supabase Clip saved...!:", clip.id);
-  //return true;
-  return data;
 } /* END of async function saveClipToSupabase(clip)  */
 
 
@@ -345,6 +569,143 @@ function render() {
   updateProjectControls(); /* 현재 state의 clip 목록을 바탕으로 프로젝트 선택 목록 등을 다시 재구성? */
 }  /* End of function render() */
 
+
+function renderAdvancedClipInfo(rootElement, clip) {
+    if (!rootElement || !clip) {
+        return;
+    }
+
+    const remote = remoteClipMetaMap.get(clip.id);
+
+    // 기존 패널이 있으면 제거 후 다시 생성
+    const oldPanel =
+        rootElement.querySelector("[data-clip-advanced-info]");
+
+    if (oldPanel) {
+        oldPanel.remove();
+    }
+
+    const details = document.createElement("details");
+    details.className = "clip-advanced-info";
+    details.dataset.clipAdvancedInfo = "true";
+
+    const summary = document.createElement("summary");
+    summary.textContent = "고급 정보";
+    details.appendChild(summary);
+
+    const grid = document.createElement("div");
+    grid.className = "clip-advanced-info-grid";
+
+    function addRow(label, value, className = "") {
+        const labelElement = document.createElement("div");
+        labelElement.className = "clip-advanced-label";
+        labelElement.textContent = label;
+
+        const valueElement = document.createElement("div");
+        valueElement.className =
+            `clip-advanced-value ${className}`.trim();
+
+        valueElement.textContent =
+            value === null ||
+            value === undefined ||
+            value === ""
+                ? "—"
+                : String(value);
+
+        grid.appendChild(labelElement);
+        grid.appendChild(valueElement);
+    }
+
+    /*
+     * 앞으로 사용할 명시적 client timestamp.
+     * 아직 migration 전이면 — 로 보이는 것이 정상.
+     */
+    addRow(
+        "Client created_at",
+        formatAdvancedTime(clip.client_created_at)
+    );
+
+    addRow(
+        "Client updated_at",
+        formatAdvancedTime(clip.client_updated_at)
+    );
+
+    /*
+     * 앞으로 사용할 명시적 server timestamp.
+     */
+    addRow(
+        "Server created_at",
+        formatAdvancedTime(
+            remote?.server_created_at ??
+            clip.server_created_at
+        )
+    );
+
+    addRow(
+        "Server updated_at",
+        formatAdvancedTime(
+            remote?.server_updated_at ??
+            clip.server_updated_at
+        )
+    );
+
+    /*
+     * 현재 legacy timestamp.
+     * timestamp migration이 끝날 때까지 비교용으로 유지.
+     */
+    addRow(
+        "Local legacy created_at",
+        formatAdvancedTime(clip.created_at)
+    );
+
+    addRow(
+        "Local legacy updated_at",
+        formatAdvancedTime(clip.updated_at)
+    );
+
+    addRow(
+        "Server legacy created_at",
+        formatAdvancedTime(remote?.created_at)
+    );
+
+    addRow(
+        "Server legacy updated_at",
+        formatAdvancedTime(remote?.updated_at)
+    );
+
+    /*
+     * Revision
+     */
+    addRow(
+        "Local revision",
+        clip.revision ?? "—"
+    );
+
+    addRow(
+        "Base revision",
+        clip.base_revision ?? "—"
+    );
+
+    addRow(
+        "Server revision",
+        remote?.revision ?? "—"
+    );
+
+    addRow(
+        "Sync status",
+        clip.sync_status ?? "—",
+        `sync-${clip.sync_status ?? "unknown"}`
+    );
+
+    addRow(
+        "Clip ID",
+        clip.id ?? "—"
+    );
+
+    details.appendChild(grid);
+    rootElement.appendChild(details);
+} /* END of function renderAdvancedClipInfo(rootElement, clip)  */
+
 function updateProjectControls() {
   const projects = [...new Set([
     ...DEFAULT_PROJECTS,
@@ -390,6 +751,9 @@ function openDialog(clip = null) {
     $("importanceInput").value = "3";
   }
 
+  const submodal = $("clipForm");
+  renderAdvancedClipInfo(submodal, clip);
+
   $("clipDialog").showModal();
   setTimeout(() => $("titleInput").focus(), 50);
 }
@@ -402,6 +766,7 @@ async function saveForm() {
   const existing = state.clips.find(c => c.id === $("clipId").value);
   const now = new Date().toISOString();
 
+
   const clip = normalizeClip({
     ...existing,
     id: existing?.id || uuid(),
@@ -413,11 +778,22 @@ async function saveForm() {
     tags: $("tagsInput").value,
     memo: $("memoInput").value,
     favorite: $("favoriteInput").checked,
+
     created_at: existing?.created_at || now,
     updated_at: now,
-    /* sync_status: existing?.sync_status || "local_only", */
+    
+    client_created_at:
+        existing?.client_created_at ??
+        existing?.created_at ??
+        now,
+
+    client_updated_at: existing ? now : null,
+
     sync_status: "local_only",
-    version: (existing?.version || 0) + 1,
+    revision: existing?.revision ?? 0,
+    base_revision:
+      existing?.base_revision ?? existing?.revision ?? 0,
+    //version: (existing?.version || 0) + 1,
   });
 
   if (!clip.title || !clip.text) {
@@ -428,40 +804,96 @@ async function saveForm() {
   
   /* 서버 저장보다 로컬 저장 IndexedDB 저장을 먼저한다 */
 
-  /*
-  try {
-    await saveClipToSupabase(clip);
-  }   
-  catch (error) {
-    console.error(
-      "Supabase 저장 실패. 로컬에는 저장되었습니다.",
-      error
-    );
-  }
-  */
-
   /* Modified on 11:42, 12Aug2026 */
   // 1. 로컬에 먼저 저장
   await putClip(clip);
 
   // 2. Supabase 저장 시도
-  const synced = await saveClipToSupabase(clip);
 
-  // 3. 서버 저장까지 성공했으면 로컬 상태도 synced로 변경
-  if (synced) {
-    clip.sync_status = "synced";
-    await putClip(clip);
+  // 3. 서버 저장까지 성공했으면
+  // 서버가 반환한 revision까지 로컬에 반영
+  // + 로컬 상태도 synced로 변경
+  try {
+
+    /* -----------------debugBegin-----------------------------
+    console.log(
+        "DEBUG before Supabase save:",
+        "client_updated_at:",
+        clip.client_updated_at,
+        clip
+    );
+     -----------------debugEnd-------------------------------*/
+
+    const savedRemoteClip = await saveClipToSupabase(clip);
+
+    if (savedRemoteClip) {
+    /* -----------------debugBegin----------------------------
+      console.log(
+          "DEBUG after Supabase save:",
+          "client_updated_at:",
+          savedRemoteClip?.client_updated_at,
+          savedRemoteClip
+      );
+       -----------------debugEnd-------------------------------*/
+
+      const syncedClip = normalizeClip({
+        ...savedRemoteClip,
+
+        /* Add #003 on 22Aug2026 */
+        sync_status: "synced",
+        base_revision: Number(savedRemoteClip.revision ?? 0) 
+      });
+
+      //remoteClipMetaMap.set(syncedClip.id, syncedClip);
+
+      // 방금 서버가 반환한 최신 revision / server timestamp를
+      // 고급 정보 UI용 Map에도 즉시 반영
+      /* >>2<< Supabase에 save 성공 */
+      updateRemoteClipMeta(savedRemoteClip);
+      /* ----------------------------------- */
+
+      await putClip(syncedClip);
+    } else {
+      console.log(
+        "Supabase 저장 실패. 로컬에는 저장되었습니다."
+      );
+    }
+
+  } catch (error) {
+    if (isRevisionConflict(error)) {
+      clip.sync_status = "conflict";
+      await putClip(clip);
+
+      console.warn(
+        "⚠️ Edit conflict detected in saveForm. Local version preserved:",
+        clip.id,
+        "base_revision:",
+        clip.base_revision
+      );
+    }
+    else if (isTombstoneConflict(error)) {
+      await deleteClip(clip.id);
+
+      console.warn(
+        "🪦 Delete-wins: stale local edit removed in saveForm:",
+        clip.id
+      );
+    }
+      else {
+      clip.sync_status = "pending";
+      await putClip(clip);
+
+      console.error(
+        "❌ Supabase save error. Local version kept pending:",
+        clip.id,
+        error
+      );
+    }
   }
-  else
-    console.log("Supabase 저장 실패. 로컬에는 저장되었습니다.");
-
-
-
 
   closeDialog();
   await refresh();
-
-}
+} /* END of sync function saveForm() { */
 
 async function exportJson() {
   const payload = {
@@ -819,6 +1251,8 @@ async function syncClips() {
 
         const remoteClips = await loadClipsFromSupabase();
 
+
+
         const localMap = new Map(
             localClips.map(clip => [clip.id, clip])
         );
@@ -826,6 +1260,13 @@ async function syncClips() {
         const remoteMap = new Map(
             remoteClips.map(clip => [clip.id, clip])
         );
+
+
+        remoteClipMetaMap.clear();
+
+        for (const remoteClip of remoteClips) {
+          updateRemoteClipMeta(remoteClip); 
+        }
 
       /*  const localClips = await getAllClips(); */
       localClips = await getAllClips(); 
@@ -847,29 +1288,39 @@ async function syncClips() {
             continue;
         }
 
+
+        // 사용자가 해결하기 전에는 conflict 클립 자동 재업로드 금지
+        if (localClip.sync_status === "conflict") {
+          console.warn(
+            "⚠️ Conflict clip skipped from automatic sync:",
+            localClip.id,
+            "base_revision:",
+            localClip.base_revision
+          );
+
+          continue;
+        }
+
+
         const remoteClip = remoteMap.get(localClip.id);
 
         // Supabase에 없음 → 업로드
         if (!remoteClip) {
             try {
-                  /*
-                  const synced =
-                    await saveClipToSupabase(localClip);
-
-                  if (synced) {
-                    localClip.sync_status = "synced"; // Add on 16:31, 13Aug2026 
-                    await putClip(localClip); // Add on 16:31, 13Aug2026 
-                    uploaded++;
-                  */
-
-                  const savedRemoteClip =
-                  await saveClipToSupabase(localClip);
+                  const savedRemoteClip = await saveClipToSupabase(localClip);
 
                   if (savedRemoteClip) {
                     const syncedClip = normalizeClip({
                       ...savedRemoteClip,
-                      sync_status: "synced"
+                      /* Add #003 on 22Aug2026 */
+                      sync_status: "synced",
+                      base_revision: Number(savedRemoteClip.revision ?? 0) 
                     });
+
+                    /* Added #002 on 22Aug2026 by kByun */
+                    /* >> */
+                    updateRemoteClipMeta(savedRemoteClip);
+                    /* ---------------------------------- */
 
                     await putClip(syncedClip);
                     uploaded++;
@@ -895,6 +1346,22 @@ async function syncClips() {
                   continue;
                 }
 
+                if (isRevisionConflict(error)) {
+                  localClip.sync_status = "conflict";
+                  await putClip(localClip);
+
+                  failed++;
+
+                  console.warn(
+                    "⚠️ Edit conflict detected. Local version preserved:",
+                    localClip.id,
+                    "base_revision:",
+                    localClip.base_revision
+                  );
+
+                  continue;
+                }
+
                 localClip.sync_status = "pending";
                 await putClip(localClip);
                 failed++;
@@ -909,56 +1376,111 @@ async function syncClips() {
             continue;
         }
       
+        
+        // 기존 synced 클립의 revision 메타데이터 migration
+        if (
+          localClip.sync_status === "synced" &&
+          (
+            localClip.revision == null ||
+            localClip.base_revision == null
+          ) &&
+          remoteClip?.revision != null
+        ) {
+          localClip.revision = Number(remoteClip.revision);
+          localClip.base_revision = Number(remoteClip.revision);
 
-        // 양쪽 모두 있음 → updated_at 비교
-        const localTime =
-          new Date(localClip.updated_at).getTime();
+          await putClip(localClip);
 
-        const remoteTime =
-          new Date(remoteClip.updated_at).getTime();
+          console.log(
+            "🔄 Legacy clip revision migrated:",
+            localClip.id,
+            "revision:",
+            localClip.revision
+          );
+        }
 
-        if (localTime > remoteTime) {
+
+        
+        
+        // 로컬에 아직 서버로 반영되지 않은 수정이 있으면
+        // updated_at보다 revision/base_revision을 먼저 검사한다.
+        const hasUnsyncedLocalEdit =
+            localClip.sync_status === "pending" ||
+            localClip.sync_status === "local_only" ||
+            localClip.sync_status === "failed";
+
+        if (hasUnsyncedLocalEdit) {
+            const localBaseRevision = Number(localClip.base_revision ?? 0);
+
+            const remoteRevision = Number(remoteClip.revision ?? 0);
+
+            // 내가 수정하기 시작한 이후 서버 revision이 이미 전진함
+            if (localBaseRevision !== remoteRevision) {
+                localClip.sync_status = "conflict";
+                await putClip(localClip);
+                failed++;
+
+                console.warn(
+                    "⚠️ Edit conflict detected before timestamp merge. Local version preserved:",
+                    localClip.id,
+                    "base_revision:",
+                    localBaseRevision,
+                    "remote_revision:",
+                    remoteRevision
+                );
+        
+                continue;
+            }
+
+            // 서버가 아직 내가 수정하기 시작한 revision 그대로라면
+            // timestamp와 관계없이 로컬 수정본 업로드를 시도한다.
             try {
-                  /*
-                  const synced = // success -> synced 
+                const savedRemoteClip =
                     await saveClipToSupabase(localClip);
 
-                  if (synced) {
-                      localClip.sync_status = "synced"; // Add on 16:38, 13Aug2026 
-                      await putClip(localClip); // Add on 16:38, 13Aug2026 
-                      uploaded++;
-                  */
-                  const savedRemoteClip =
-                  await saveClipToSupabase(localClip);
-
-                  if (savedRemoteClip) {
+                if (savedRemoteClip) {
                     const syncedClip = normalizeClip({
-                      ...savedRemoteClip,
-                      sync_status: "synced"
+                        ...savedRemoteClip,
+                        sync_status: "synced",
+                        /* Add #006 on 22Aug2026 */
+                        base_revision: Number(savedRemoteClip.revision ?? 0)
                     });
+
+                    /* Add #007 on 22Aug2026 */
+                    updateRemoteClipMeta(savedRemoteClip);
 
                     await putClip(syncedClip);
                     uploaded++;
-                  } else {
-                      localClip.sync_status = "pending";
-                      await putClip(localClip);
-                      failed++;
-
-                      console.warn(
-                          "⚠️ Clip update failed, kept pending:",
-                          localClip.id
-                      );
-                  }
+                } else {
+                    localClip.sync_status = "pending";
+                    await putClip(localClip);
+                    failed++;
+                }
             } catch (error) {
                 if (isTombstoneConflict(error)) {
-                  await deleteClip(localClip.id);
+                    await deleteClip(localClip.id);
 
-                  console.warn(
-                    "🪦 Delete-wins: stale local edit removed after tombstone conflict:",
-                    localClip.id
-                  );
+                    console.warn(
+                        "🪦 Delete-wins: stale local edit removed after tombstone conflict:",
+                        localClip.id
+                    );
 
-                  continue;
+                    continue;
+                }
+
+                if (isRevisionConflict(error)) {
+                    localClip.sync_status = "conflict";
+                    await putClip(localClip);
+                    failed++;
+
+                    console.warn(
+                        "⚠️ Edit conflict detected. Local version preserved:",
+                        localClip.id,
+                        "base_revision:",
+                        localClip.base_revision
+                    );
+
+                    continue;
                 }
 
                 localClip.sync_status = "pending";
@@ -966,29 +1488,74 @@ async function syncClips() {
                 failed++;
 
                 console.error(
-                  "❌ Clip update error, kept pending:",
-                  localClip.id,
-                  error
+                    "❌ Clip update error, kept pending:",
+                    localClip.id,
+                    error
                 );
             }
+        
+            continue;
+        }
 
-        } else if (remoteTime > localTime) {
-          // 서버DB Supabase가 최신
-          remoteClip.sync_status = "synced"; /* Add on 16:42, 13Aug2026 */
-          await putClip(remoteClip);
-          downloaded++;
+
+        // 양쪽 모두 존재하고, 미동기화 로컬 수정도 없는 상태.
+        // 이제 client/server timestamp가 아니라 revision만으로 판단한다.
+        const localBaseRevision =
+            Number(localClip.base_revision ?? localClip.revision ?? 0);
+
+        const remoteRevision =
+            Number(remoteClip.revision ?? 0);
+
+        if (remoteRevision > localBaseRevision) {
+            // 다른 기기 등에서 서버 revision이 전진함 → 서버본 다운로드
+            const downloadedClip = normalizeClip({
+                ...remoteClip,
+                sync_status: "synced",
+                base_revision: remoteRevision
+            });
+
+            await putClip(downloadedClip);
+            downloaded++;
+        
+        } else if (remoteRevision === localBaseRevision) {
+            // 내가 알고 있는 서버 revision과 실제 서버 revision이 동일
+            // → 변경 없음
+            if (
+                localClip.sync_status !== "synced" ||
+                Number(localClip.revision ?? 0) !== remoteRevision ||
+                Number(localClip.base_revision ?? 0) !== remoteRevision
+            ) {
+                const syncedClip = normalizeClip({
+                    ...localClip,
+                    revision: remoteRevision,
+                    base_revision: remoteRevision,
+                    sync_status: "synced"
+                });
+
+                await putClip(syncedClip);
+            }
+
+            unchanged++;
 
         } else {
-          // 동일
-          if (localClip.sync_status !== "synced") {        
-            /* add following 3 lines on 16:45 on 13Aug2026..양쪽 수정시각이 동일 */
-
-            localClip.sync_status = "synced";
+            // 서버 revision이 로컬이 마지막으로 확인한 revision보다 작음.
+            // 정상적인 monotonic revision 모델에서는 발생하면 안 되는 상태.
+            // 자동 업로드/덮어쓰기는 하지 않고 보존한다.
+            localClip.sync_status = "conflict";
             await putClip(localClip);
-          }
 
-          unchanged++;
+            failed++;
+
+            console.warn(
+                "⚠️ Unexpected revision rollback detected. Local version preserved:",
+                localClip.id,
+                "base_revision:",
+                localBaseRevision,
+                "remote_revision:",
+                remoteRevision
+            );
         }
+
       }
 
       // 2. Supabase에만 존재하는 clip 검사 + 삭제한 clip을 같은 sync 안에서 다시 살림 없게!
@@ -996,6 +1563,11 @@ async function syncClips() {
         if (!localMap.has(remoteClip.id) &&
             !tombstoneIds.has(remoteClip.id)
         ) {
+          /* Addo #005 on 22Aug2026 */
+          remoteClip.sync_status = "synced"; 
+          remoteClip.base_revision = Number(remoteClip.revision ?? 0);
+          /* ------------------------------------ */
+
             await putClip(remoteClip);
             downloaded++;
           }

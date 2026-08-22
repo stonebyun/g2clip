@@ -81,3 +81,70 @@ label input, label textarea, label select { margin-top: 6px; font-weight: 400; }
   .two-column { grid-template-columns: 1fr; }
   .app-header p { display: none; }
 }
+
+/* 디버깅용 고급 정보 */
+
+.clip-advanced-info {
+    margin-top: 24px;
+    padding: 14px 16px;
+    border: 1px solid #d8dde6;
+    border-radius: 10px;
+    background: #f8fafc;
+    font-size: 13px;
+}
+
+.clip-advanced-info summary {
+    cursor: pointer;
+    font-weight: 700;
+    font-size: 14px;
+    user-select: none;
+}
+
+.clip-advanced-info-grid {
+    display: grid;
+    grid-template-columns: minmax(145px, 190px) 1fr;
+    gap: 8px 14px;
+    margin-top: 14px;
+}
+
+.clip-advanced-label {
+    color: #64748b;
+    font-weight: 600;
+}
+
+.clip-advanced-value {
+    color: #111827;
+    font-family:
+        ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        Monaco,
+        Consolas,
+        monospace;
+    overflow-wrap: anywhere;
+}
+
+.clip-advanced-value.sync-synced {
+    font-weight: 700;
+}
+
+.clip-advanced-value.sync-pending,
+.clip-advanced-value.sync-local_only {
+    font-weight: 700;
+}
+
+.clip-advanced-value.sync-conflict,
+.clip-advanced-value.sync-failed {
+    font-weight: 700;
+}
+
+@media (max-width: 700px) {
+    .clip-advanced-info-grid {
+        grid-template-columns: 1fr;
+        gap: 3px;
+    }
+
+    .clip-advanced-value {
+        margin-bottom: 8px;
+    }
+}
